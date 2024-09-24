@@ -1,0 +1,57 @@
++ NGPU=2
++ LOG_RANK=0
++ CONFIG_FILE=./train_configs/llama3_8b.toml
++ overrides=
++ '[' 0 -ne 0 ']'
++ torchrun --nproc_per_node=2 --rdzv_backend c10d --rdzv_endpoint=localhost:0 --local-ranks-filter 0 --role rank --tee 3 train.py --job.config_file ./train_configs/llama3_8b.toml
+W0923 17:16:47.888000 3218880 site-packages/torch/distributed/run.py:793] 
+W0923 17:16:47.888000 3218880 site-packages/torch/distributed/run.py:793] *****************************************
+W0923 17:16:47.888000 3218880 site-packages/torch/distributed/run.py:793] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0923 17:16:47.888000 3218880 site-packages/torch/distributed/run.py:793] *****************************************
+[rank0]:2024-09-23 17:16:50,138 - root - INFO - Starting job: Llama 3 8B training
+[rank0]:2024-09-23 17:16:52,146 - root - WARNING - ENV[TORCH_NCCL_ASYNC_ERROR_HANDLING] = 1 will be overridden to 3 based on job config
+[rank0]:2024-09-23 17:16:52,168 - root - INFO - GPU capacity: NVIDIA H100 80GB HBM3 (0) with 79.21GiB memory
+[rank0]:2024-09-23 17:16:52,241 - root - INFO - Peak FLOPS used for computing MFU: 9.890e+14
+[rank0]:2024-09-23 17:16:52,242 - root - INFO - Building 1-D device mesh with ['dp'], [2]
+[rank0]:2024-09-23 17:16:52,248 - root - INFO - Building tiktoken tokenizer locally from ./torchtitan/datasets/tokenizer/original/tokenizer.model
+[rank0]:2024-09-23 17:16:52,531 - root - INFO - TikTokenizer built: #words 128256, BOS ID 128000, EOS ID 128001
+[rank0]:2024-09-23 17:16:52,532 - root - INFO - Preparing c4 dataset from allenai/c4
+[rank0]:2024-09-23 17:17:08,029 - root - INFO - Building llama3 8B with ModelArgs(dim=4096, n_layers=32, n_heads=32, n_kv_heads=8, vocab_size=128256, multiple_of=1024, ffn_dim_multiplier=1.3, norm_eps=1e-05, rope_theta=500000, max_batch_size=32, max_seq_len=4096, depth_init=True, norm_type='rmsnorm')
+[rank0]:2024-09-23 17:17:09,048 - root - INFO - Model llama3 8B size: 8,030,261,248 total parameters
+[rank0]:2024-09-23 17:17:09,049 - root - INFO - Applied selective activation checkpointing to the model
+[rank0]:2024-09-23 17:17:09,073 - root - INFO - Compiling each TransformerBlock with torch.compile
+[rank0]:2024-09-23 17:17:09,208 - root - INFO - Applied FSDP to the model
+[rank0]:2024-09-23 17:17:11,304 - root - INFO - GPU memory usage for model: 28.37GiB(35.82%)
+[rank0]:2024-09-23 17:17:11,306 - root - INFO - Metrics logging active. Tensorboard logs will be saved at ./outputs/tb/20240923-1717
+[rank0]:2024-09-23 17:17:11,309 - root - INFO - Training starts at step 1, with local batch size 1, global batch size 2, sequence length 4096, total steps 100 (warmup 200)
+[rank0]:[rank0]:W0923 17:17:15.074000 3218970 site-packages/torch/_logging/_internal.py:1081] [0/0] 
+[rank0]:[rank0]:W0923 17:17:15.074000 3218970 site-packages/torch/_logging/_internal.py:1081] [0/0] Detected that context_fn is passed to torch.utils.checkpoint under torch.compile.
+[rank0]:[rank0]:W0923 17:17:15.074000 3218970 site-packages/torch/_logging/_internal.py:1081] [0/0] Please make sure the checkpointed region does not contain in-place ops (e.g. torch.relu_).
+[rank0]:[rank0]:W0923 17:17:15.074000 3218970 site-packages/torch/_logging/_internal.py:1081] [0/0] 
+[rank0]:/home/adhoq26/miniconda3/envs/titan/lib/python3.12/site-packages/torch/_inductor/lowering.py:1694: UserWarning: Torchinductor does not support code generation for complex operators. Performance may be worse than eager.
+[rank0]:  warnings.warn(
+[rank0]:2024-09-23 17:17:19,753 - root - WARNING - 1 CUDA memory allocation retries.
+[rank0]:2024-09-23 17:17:19,754 - root - INFO - step:  1  loss: 12.2810  memory: 77.07GiB(97.30%)  wps: 485  mfu: 2.52%
+[rank0]:2024-09-23 17:17:19,754 - root - INFO - Synchronizing and adjusting timeout for all ProcessGroups to 0:01:40
+[rank0]:2024-09-23 17:17:34,581 - root - WARNING - 19 CUDA memory allocation retries.
+[rank0]:2024-09-23 17:17:34,581 - root - INFO - step: 10  loss: 10.9609  memory: 76.07GiB(96.04%)  wps: 2,486  mfu: 12.94%
+[rank0]:2024-09-23 17:17:47,716 - root - WARNING - 39 CUDA memory allocation retries.
+[rank0]:2024-09-23 17:17:47,717 - root - INFO - step: 20  loss:  9.1244  memory: 76.04GiB(96.00%)  wps: 3,119  mfu: 16.23%
+[rank0]:2024-09-23 17:18:00,177 - root - WARNING - 59 CUDA memory allocation retries.
+[rank0]:2024-09-23 17:18:00,178 - root - INFO - step: 30  loss:  8.3178  memory: 76.04GiB(96.00%)  wps: 3,288  mfu: 17.11%
+[rank0]:2024-09-23 17:18:13,200 - root - WARNING - 79 CUDA memory allocation retries.
+[rank0]:2024-09-23 17:18:13,201 - root - INFO - step: 40  loss:  7.6878  memory: 76.04GiB(96.00%)  wps: 3,146  mfu: 16.37%
+[rank0]:2024-09-23 17:18:25,987 - root - WARNING - 99 CUDA memory allocation retries.
+[rank0]:2024-09-23 17:18:25,987 - root - INFO - step: 50  loss:  7.4938  memory: 76.04GiB(96.00%)  wps: 3,204  mfu: 16.68%
+[rank0]:2024-09-23 17:18:38,414 - root - WARNING - 119 CUDA memory allocation retries.
+[rank0]:2024-09-23 17:18:38,414 - root - INFO - step: 60  loss:  7.5021  memory: 76.04GiB(96.00%)  wps: 3,297  mfu: 17.16%
+[rank0]:2024-09-23 17:18:51,422 - root - WARNING - 139 CUDA memory allocation retries.
+[rank0]:2024-09-23 17:18:51,422 - root - INFO - step: 70  loss:  7.3660  memory: 76.04GiB(96.00%)  wps: 3,150  mfu: 16.39%
+[rank0]:2024-09-23 17:19:04,413 - root - WARNING - 159 CUDA memory allocation retries.
+[rank0]:2024-09-23 17:19:04,413 - root - INFO - step: 80  loss:  7.3055  memory: 76.04GiB(96.00%)  wps: 3,154  mfu: 16.41%
+[rank0]:2024-09-23 17:19:16,987 - root - WARNING - 179 CUDA memory allocation retries.
+[rank0]:2024-09-23 17:19:16,988 - root - INFO - step: 90  loss:  7.4763  memory: 76.04GiB(96.00%)  wps: 3,258  mfu: 16.96%
+[rank0]:2024-09-23 17:19:29,821 - root - WARNING - 199 CUDA memory allocation retries.
+[rank0]:2024-09-23 17:19:29,821 - root - INFO - step: 100  loss:  7.2240  memory: 76.04GiB(96.00%)  wps: 3,192  mfu: 16.62%
+[rank0]:2024-09-23 17:19:29,824 - root - INFO - Sleeping 2 seconds for other ranks to complete
+[rank0]:2024-09-23 17:19:31,825 - root - INFO - Training completed

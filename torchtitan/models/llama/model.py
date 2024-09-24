@@ -15,7 +15,16 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torchtitan.models.norms import build_norm
+from .triton_linear import TritonLinear
+# from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+import functools
+from .triton_flash_attention import flash as attention
+# from.base_amd_flash_attention import attention as base_attention
+# flex_attention = torch.compile(flex_attention, dynamic=False)
 
+
+USE_CUDA = False
+USE_TRITON = True
 
 @dataclass
 class ModelArgs:
@@ -29,6 +38,7 @@ class ModelArgs:
     norm_eps: float = 1e-5
     rope_theta: float = 10000
 
+    max_batch_size: int = 32
     max_seq_len: int = 2048
     # If `True`, then each transformer block init uses its layer ID, and if
     # `False`, each uses the total number of transformer blocks
@@ -126,6 +136,9 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     )
 
 
+def causal_mask(b, h, q_idx, kv_idx):
+    return q_idx >= kv_idx
+
 class Attention(nn.Module):
     """
     Multi-head attention module.
@@ -156,14 +169,28 @@ class Attention(nn.Module):
         self.n_rep = self.n_heads // self.n_kv_heads
         self.head_dim = model_args.dim // model_args.n_heads
 
-        self.wq = nn.Linear(
-            model_args.dim, model_args.n_heads * self.head_dim, bias=False
-        )
-        self.wk = nn.Linear(model_args.dim, self.n_kv_heads * self.head_dim, bias=False)
-        self.wv = nn.Linear(model_args.dim, self.n_kv_heads * self.head_dim, bias=False)
-        self.wo = nn.Linear(
-            model_args.n_heads * self.head_dim, model_args.dim, bias=False
-        )
+        if USE_CUDA:
+
+            self.wq = nn.Linear(
+                model_args.dim, model_args.n_heads * self.head_dim, bias=False
+            )
+            self.wk = nn.Linear(model_args.dim, self.n_kv_heads * self.head_dim, bias=False)
+            self.wv = nn.Linear(model_args.dim, self.n_kv_heads * self.head_dim, bias=False)
+            self.wo = nn.Linear(
+                model_args.n_heads * self.head_dim, model_args.dim, bias=False
+            )
+        
+        if USE_TRITON:
+
+            self.wq = TritonLinear(
+                model_args.dim, model_args.n_heads * self.head_dim
+            )
+            self.wk = TritonLinear(model_args.dim, self.n_kv_heads * self.head_dim)
+            self.wv = TritonLinear(model_args.dim, self.n_kv_heads * self.head_dim)
+            self.wo = TritonLinear(
+                model_args.n_heads * self.head_dim, model_args.dim
+            )
+
 
     def init_weights(self, init_std: float):
         for linear in (self.wq, self.wk, self.wv):
@@ -184,7 +211,6 @@ class Attention(nn.Module):
 
         Returns:
             torch.Tensor: Output tensor after attention.
-
         """
         bs, seqlen, _ = x.shape
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
@@ -206,8 +232,19 @@ class Attention(nn.Module):
         xk = keys.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
         xv = values.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
 
-        # we use casual mask for training
-        output = F.scaled_dot_product_attention(xq, xk, xv, is_causal=True)
+        if USE_TRITON:
+            bs, nh, seq_len, hd = xq.shape
+            # block_mask = create_block_mask(causal_mask, 1, 1, seq_len, seq_len)
+            # attention = functools.partial(flex_attention, block_mask=block_mask, enable_gqa=True)
+            # output = attention(xq, xk, xv)
+            o = torch.empty_like(xq, dtype=xq.dtype)
+            M = torch.empty((bs, nh, seq_len), device=xq.device, dtype=torch.float32)
+            output = attention(xq, xk, xv, o, M)
+
+        if USE_CUDA:
+            #we use casual mask for training
+            output = F.scaled_dot_product_attention(xq, xk, xv, is_causal=True)
+
         output = output.transpose(
             1, 2
         ).contiguous()  # (bs, seqlen, n_local_heads, head_dim)
@@ -231,7 +268,6 @@ class FeedForward(nn.Module):
         w3 (Linear): Linear transformation for the third layer.
 
     """
-
     def __init__(
         self,
         dim: int,
@@ -245,10 +281,17 @@ class FeedForward(nn.Module):
         if ffn_dim_multiplier is not None:
             hidden_dim = int(ffn_dim_multiplier * hidden_dim)
         hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
+        
+        if USE_CUDA:
+            self.w1 = nn.Linear(dim, hidden_dim, bias=False)
+            self.w2 = nn.Linear(hidden_dim, dim, bias=False)
+            self.w3 = nn.Linear(dim, hidden_dim, bias=False)
+        
+        if USE_TRITON:
+            self.w1 = TritonLinear(dim, hidden_dim)
+            self.w2 = TritonLinear(hidden_dim, dim)
+            self.w3 = TritonLinear(dim, hidden_dim)
 
-        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
-        self.w2 = nn.Linear(hidden_dim, dim, bias=False)
-        self.w3 = nn.Linear(dim, hidden_dim, bias=False)
 
     def forward(self, x):
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
@@ -358,7 +401,6 @@ class Transformer(nn.Module):
         self.n_layers = model_args.n_layers
 
         self.tok_embeddings = nn.Embedding(model_args.vocab_size, model_args.dim)
-
         # TODO persistent should be set to false, since this buffer can be recomputed.
         # however, we set it to true for 2 reasons.  (1) due to pytorch/pytorch#123411,
         # compile or pipeline-tracer will not correctly handle non-persistent buffers,
@@ -366,6 +408,7 @@ class Transformer(nn.Module):
         # a seed checkpoint rather than calling init_weights, we need freqs_cis to be
         # initialized by the checkpoint, or we need to add a separate initializer for
         # just the non-persistent buffers that is called after loading checkpoints.
+
         self.register_buffer("freqs_cis", self._precompute_freqs_cis(), persistent=True)
 
         self.layers = torch.nn.ModuleDict()
@@ -376,7 +419,12 @@ class Transformer(nn.Module):
             model_args.norm_type, dim=model_args.dim, eps=model_args.norm_eps
         )
 
+        # if USE_CUDA:
         self.output = nn.Linear(model_args.dim, model_args.vocab_size, bias=False)
+
+        # if USE_TRITON:
+        #   self.output = TritonLinear(model_args.dim, model_args.vocab_size)
+
         self.init_weights()
 
     def init_weights(self):
@@ -438,7 +486,13 @@ class Transformer(nn.Module):
             h = layer(h, self.freqs_cis)
 
         h = self.norm(h) if self.norm else h
+
+        # print(f"{h.dtype}")
+        # output = self.output(h.to(torch.bfloat16)).float() if self.output else h
+
         output = self.output(h).float() if self.output else h
+
+        # output = self.output(h.to(torch.float32)).float() if self.output else h
         return output
 
     @classmethod
