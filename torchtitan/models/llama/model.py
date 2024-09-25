@@ -8,6 +8,8 @@
 # Copyright (c) Meta Platforms, Inc. All Rights Reserved.
 
 
+# from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+import functools
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -15,16 +17,13 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torchtitan.models.norms import build_norm
-from .triton_linear import TritonLinear
-# from torch.nn.attention.flex_attention import flex_attention, create_block_mask
-import functools
+
 from .triton_flash_attention import flash as attention
+from .triton_linear import TritonLinear
+
 # from.base_amd_flash_attention import attention as base_attention
 # flex_attention = torch.compile(flex_attention, dynamic=False)
 
-
-USE_CUDA = False
-USE_TRITON = True
 
 @dataclass
 class ModelArgs:
@@ -44,6 +43,7 @@ class ModelArgs:
     # `False`, each uses the total number of transformer blocks
     depth_init: bool = True
     norm_type: str = "rmsnorm"
+    kernel_set: str = "CUDA"
 
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
@@ -139,6 +139,7 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
 def causal_mask(b, h, q_idx, kv_idx):
     return q_idx >= kv_idx
 
+
 class Attention(nn.Module):
     """
     Multi-head attention module.
@@ -161,6 +162,7 @@ class Attention(nn.Module):
     def __init__(self, model_args: ModelArgs):
         super().__init__()
         self.n_heads = model_args.n_heads
+        self.kernel_set = model_args.kernel_set
         self.n_kv_heads = (
             model_args.n_heads
             if model_args.n_kv_heads is None
@@ -169,28 +171,31 @@ class Attention(nn.Module):
         self.n_rep = self.n_heads // self.n_kv_heads
         self.head_dim = model_args.dim // model_args.n_heads
 
-        if USE_CUDA:
+        if self.kernel_set == "CUDA":
 
             self.wq = nn.Linear(
                 model_args.dim, model_args.n_heads * self.head_dim, bias=False
             )
-            self.wk = nn.Linear(model_args.dim, self.n_kv_heads * self.head_dim, bias=False)
-            self.wv = nn.Linear(model_args.dim, self.n_kv_heads * self.head_dim, bias=False)
+            self.wk = nn.Linear(
+                model_args.dim, self.n_kv_heads * self.head_dim, bias=False
+            )
+            self.wv = nn.Linear(
+                model_args.dim, self.n_kv_heads * self.head_dim, bias=False
+            )
             self.wo = nn.Linear(
                 model_args.n_heads * self.head_dim, model_args.dim, bias=False
             )
-        
-        if USE_TRITON:
 
-            self.wq = TritonLinear(
-                model_args.dim, model_args.n_heads * self.head_dim
-            )
+        elif self.kernel_set == "Triton":
+
+            self.wq = TritonLinear(model_args.dim, model_args.n_heads * self.head_dim)
             self.wk = TritonLinear(model_args.dim, self.n_kv_heads * self.head_dim)
             self.wv = TritonLinear(model_args.dim, self.n_kv_heads * self.head_dim)
-            self.wo = TritonLinear(
-                model_args.n_heads * self.head_dim, model_args.dim
+            self.wo = TritonLinear(model_args.n_heads * self.head_dim, model_args.dim)
+        else:
+            raise ValueError(
+                f"Unknown kernel set: {self.kernel_set}. Expected CUDA or Triton"
             )
-
 
     def init_weights(self, init_std: float):
         for linear in (self.wq, self.wk, self.wv):
@@ -232,7 +237,7 @@ class Attention(nn.Module):
         xk = keys.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
         xv = values.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
 
-        if USE_TRITON:
+        if self.kernel_set == "Triton":
             bs, nh, seq_len, hd = xq.shape
             # block_mask = create_block_mask(causal_mask, 1, 1, seq_len, seq_len)
             # attention = functools.partial(flex_attention, block_mask=block_mask, enable_gqa=True)
@@ -241,8 +246,8 @@ class Attention(nn.Module):
             M = torch.empty((bs, nh, seq_len), device=xq.device, dtype=torch.float32)
             output = attention(xq, xk, xv, o, M)
 
-        if USE_CUDA:
-            #we use casual mask for training
+        else:
+            # we use casual mask for training
             output = F.scaled_dot_product_attention(xq, xk, xv, is_causal=True)
 
         output = output.transpose(
@@ -268,12 +273,14 @@ class FeedForward(nn.Module):
         w3 (Linear): Linear transformation for the third layer.
 
     """
+
     def __init__(
         self,
         dim: int,
         hidden_dim: int,
         multiple_of: int,
         ffn_dim_multiplier: Optional[float],
+        model_args: ModelArgs,
     ):
         super().__init__()
         hidden_dim = int(2 * hidden_dim / 3)
@@ -281,17 +288,16 @@ class FeedForward(nn.Module):
         if ffn_dim_multiplier is not None:
             hidden_dim = int(ffn_dim_multiplier * hidden_dim)
         hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
-        
-        if USE_CUDA:
+
+        if model_args.kernel_set == "CUDA":
             self.w1 = nn.Linear(dim, hidden_dim, bias=False)
             self.w2 = nn.Linear(hidden_dim, dim, bias=False)
             self.w3 = nn.Linear(dim, hidden_dim, bias=False)
-        
-        if USE_TRITON:
+
+        else:
             self.w1 = TritonLinear(dim, hidden_dim)
             self.w2 = TritonLinear(hidden_dim, dim)
             self.w3 = TritonLinear(dim, hidden_dim)
-
 
     def forward(self, x):
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
@@ -332,6 +338,7 @@ class TransformerBlock(nn.Module):
             hidden_dim=4 * model_args.dim,
             multiple_of=model_args.multiple_of,
             ffn_dim_multiplier=model_args.ffn_dim_multiplier,
+            model_args=model_args,
         )
         self.layer_id = layer_id
         self.num_layers = model_args.n_layers

@@ -266,6 +266,12 @@ class JobConfig:
             help="Whether to apply loss parallel when sequence parallel is enabled",
         )
         self.parser.add_argument(
+            "--training.kernel_set",
+            type=str,
+            default="CUDA",
+            help="Whether to run with all Triton kernels or CUDA kernels",
+        )
+        self.parser.add_argument(
             "--experimental.enable_async_tensor_parallel",
             default=False,
             action="store_true",

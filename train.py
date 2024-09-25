@@ -109,9 +109,11 @@ def main(job_config: JobConfig):
     # 1. norm type to decide which norm layer to use
     # 2. vocab size from tokenizer
     # 3. max_seq_len base on inputs
+    # 4. kernel set to use (Triton or CUDA)
     model_config.norm_type = job_config.model.norm_type
     model_config.vocab_size = tokenizer.n_words
     model_config.max_seq_len = job_config.training.seq_len
+    model_config.kernel_set = job_config.training.kernel_set
 
     logger.info(f"Building {model_name} {job_config.model.flavor} with {model_config}")
     with torch.device("meta"):
